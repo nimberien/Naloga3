@@ -3,19 +3,21 @@ import pandas as pd
 import plotly.express as px
 from transformers import pipeline
 
-# Nastavitve strani
+# 1. NASTAVITVE STRANI
 st.set_page_config(page_title="Brand Reputation Monitor 2023", layout="wide")
 
-# --- PART 3: HUGGING FACE INTEGRACIJA ---
-# Naložimo model za globoko učenje (Transformers)
+# --- PART 3: HUGGING FACE INTEGRACIJA (Optimizirano za Render) ---
 @st.cache_resource
 def load_sentiment_model():
-    # Uporaba zahtevanega modela distilbert za klasifikacijo Positive/Negative
-    return pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+    # Uporaba "Tiny" modela, da ne presežemo 512MB RAM-a na Renderju
+    # device=-1 prisili uporabo procesorja (CPU)
+    return pipeline("sentiment-analysis", 
+                    model="prajjwal1/bert-tiny", 
+                    device=-1)
 
 sentiment_pipeline = load_sentiment_model()
 
-# Funkcija za nalaganje podatkov iz CSV
+# Funkcija za nalaganje podatkov
 @st.cache_data
 def load_data():
     try:
@@ -27,65 +29,64 @@ def load_data():
 
 df = load_data()
 
+# --- GLAVNI NASLOV ---
 st.title("🚀 Brand Reputation Monitor 2023")
-st.markdown("Aplikacija za spremljanje ugleda blagovne znamke s pomočjo strojnega učenja.")
 
 # --- PART 2: SIDEBAR NAVIGATION ---
 st.sidebar.title("Navigacija")
-section = st.sidebar.radio(
-    "Izberi razdelek:",
-    ("Products", "Testimonials", "Reviews")
-)
+section = st.sidebar.radio("Izberi razdelek:", ("Products", "Testimonials", "Reviews"))
 
 if df is not None:
-    # Razdelka Products in Testimonials (Preprost prikaz)
     if section == "Products":
         st.header("📦 Products")
-        st.write("Seznam izdelkov, pridobljenih s strganjem podatkov.")
-        st.dataframe(df[['review_text']].rename(columns={'review_text': 'Product Description'}), width='stretch')
+        st.write("Seznam izdelkov pridobljenih iz sandbox okolja.")
+        st.dataframe(df[['review_text']].rename(columns={'review_text': 'Product Description'}), use_container_width=True)
 
     elif section == "Testimonials":
         st.header("💬 Testimonials")
-        st.write("Pričevanja strank o naših storitvah.")
+        st.write("Seznam pričevanj strank.")
         st.table(df[['review_text']].head(5))
 
-    # --- PART 2 & 3: REVIEWS (CORE FEATURE) ---
     elif section == "Reviews":
-        st.header("📊 Analiza mnenj za leto 2023")
+        st.header("📊 Analiza mnenj - Leto 2023")
 
-        # Seznam mesecev za drsnik (PART 2)
+        # PART 2: Drsnik za izbiro meseca
         months = ["January", "February", "March", "April", "May", "June", 
                   "July", "August", "September", "October", "November", "December"]
         
-        # ZAHTEVA: st.select_slider za izbiro meseca
-        selected_month = st.select_slider(
-            "Izberi mesec v letu 2023:",
-            options=months,
-            value="June"
-        )
-
-        # ZAHTEVA: Filtriranje podatkov na podlagi meseca
+        selected_month = st.select_slider("Izberi mesec:", options=months, value="June")
         filtered_df = df[df['month'] == selected_month]
 
         if filtered_df.empty:
-            st.warning(f"Za mesec {selected_month} ni podatkov v 2023.")
+            st.warning(f"Za mesec {selected_month} ni podatkov.")
         else:
-            st.subheader(f"Rezultati za mesec: {selected_month}")
-            
-            # Prikaz ključnih metrik
-            col1, col2 = st.columns(2)
-            pos_reviews = filtered_df[filtered_df['sentiment'] == 'POSITIVE']
-            col1.metric("Skupno mnenj", len(filtered_df))
-            col2.metric("Pozitivna mnenja", len(pos_reviews))
+            # --- PART 4: VIZUALIZACIJA (Bar Chart) ---
+            st.subheader(f"Statistika za {selected_month}")
 
-            # ZAHTEVA: Prikaz mnenj s sentimentom (PART 3)
-            st.write("### Podrobna AI analiza")
-            st.dataframe(filtered_df[['date', 'review_text', 'sentiment', 'confidence']], width='stretch')
-            
-            # Grafikon za boljšo vizualizacijo
-            fig = px.pie(filtered_df, names='sentiment', color='sentiment',
-                         color_discrete_map={'POSITIVE': '#2ecc71', 'NEGATIVE': '#e74c3c'},
-                         title=f"Sentiment v mesecu {selected_month}")
-            st.plotly_chart(fig)
+            # Priprava podatkov za stolpčni grafikon
+            chart_data = filtered_df.groupby('sentiment').agg(
+                Count=('sentiment', 'count'),
+                Avg_Confidence=('confidence', 'mean')
+            ).reset_index()
+
+            # ZAHTEVA: Bar Chart s Confidence Score v tooltipu
+            fig = px.bar(
+                chart_data, 
+                x='sentiment', 
+                y='Count',
+                color='sentiment',
+                color_discrete_map={'POSITIVE': '#2ecc71', 'NEGATIVE': '#e74c3c'},
+                title=f"Število mnenj v mesecu {selected_month}",
+                hover_data={'Avg_Confidence': ':.4f'} 
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Prikaz povprečne stopnje zaupanja (Advanced Part 4)
+            avg_score = filtered_df['confidence'].mean()
+            st.metric("Povprečna stopnja zaupanja modela", f"{avg_score:.2%}")
+
+            # PART 3: Prikaz tabele z AI analizo
+            st.write("### Podrobna tabela mnenj")
+            st.dataframe(filtered_df[['date', 'review_text', 'sentiment', 'confidence']], use_container_width=True)
 else:
-    st.error("Podatki niso na voljo. Najprej zaženi skripto za strganje podatkov (Naloga3.py).")
+    st.error("Manjka datoteka 'analyzed_reviews_2023.csv'!")
