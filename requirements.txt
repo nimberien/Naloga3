@@ -1,6 +1,0 @@
-streamlit
-pandas
-plotly
-transformers
-torch --extra-index-url https://download.pytorch.org/whl/cpu
-
