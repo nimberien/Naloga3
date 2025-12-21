@@ -5,3 +5,7 @@ torch
 plotly
 requests
 beautifulsoup4
+pillow
+matplotlib
+wordcloud
+
