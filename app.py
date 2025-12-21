@@ -1,176 +1,155 @@
 import streamlit as st
 import pandas as pd
-import altair as alt
-from datetime import datetime
+import requests
+from bs4 import BeautifulSoup
 from transformers import pipeline
+from wordcloud import WordCloud, STOPWORDS
+import matplotlib.pyplot as plt
+import os
+import datetime
 
-# -----------------------------------
-# CONFIG
-# -----------------------------------
-st.set_page_config(
-    page_title="Brand Reputation Dashboard 2023",
-    layout="wide"
-)
+# ---------------------------------------
+# 1. DEL: SCRAPER (Ustvari 3 ločene CSV datoteke)
+# ---------------------------------------
+def scrape_all_to_csv():
+    base_url = "https://web-scraping.dev"
+    
+    # --- Produkati (vseh 6 strani) ---
+    products_list = []
+    for p in range(1, 7):
+        res = requests.get(f"{base_url}/products?page={p}")
+        soup = BeautifulSoup(res.text, 'html.parser')
+        for item in soup.select('div.row.product'):
+            products_list.append({
+                "Name": item.select_one('h3.mb-0').text.strip(),
+                "Description": item.select_one('div.short-description').text.strip()
+            })
+    pd.DataFrame(products_list).to_csv("products.csv", index=False, encoding='utf-8')
+
+    # --- Testimonials ---
+    testimonials_list = []
+    res = requests.get(f"{base_url}/testimonials")
+    soup = BeautifulSoup(res.text, 'html.parser')
+    for test in soup.select('div.testimonial'):
+        testimonials_list.append({
+            "Content": test.select_one('p.text').text.strip()
+        })
+    pd.DataFrame(testimonials_list).to_csv("testimonials.csv", index=False, encoding='utf-8')
+
+    # --- Reviews (2023) ---
+    reviews_list = []
+    for p in range(1, 10): # Scrape več strani za celotno leto 2023
+        res = requests.get(f"{base_url}/reviews?page={p}")
+        soup = BeautifulSoup(res.text, 'html.parser')
+        page_reviews = soup.select('div.review')
+        if not page_reviews: break
+        for rev in page_reviews:
+            reviews_list.append({
+                "date": rev.select_one('[data-testid="review-date"]').text.strip(),
+                "text": rev.select_one('[data-testid="review-text"]').text.strip()
+            })
+    pd.DataFrame(reviews_list).to_csv("reviews.csv", index=False, encoding='utf-8')
+
+# Preverimo, če datoteke obstajajo
+if not os.path.exists("reviews.csv") or not os.path.exists("products.csv"):
+    with st.spinner("Prvič zbiram podatke in ustvarjam CSV datoteke..."):
+        scrape_all_to_csv()
+
+# ---------------------------------------
+# 2. DEL: STREAMLIT APLIKACIJA
+# ---------------------------------------
+st.set_page_config(page_title="Brand Reputation Dashboard", layout="wide")
+
+st.title("📊 Brand Reputation Dashboard (2023)")
 
 @st.cache_data
 def load_data():
     products = pd.read_csv("products.csv")
-    reviews = pd.read_csv("reviews.csv")
     testimonials = pd.read_csv("testimonials.csv")
-    return products, reviews, testimonials
+    reviews = pd.read_csv("reviews.csv")
+    return products, testimonials, reviews
 
-@st.cache_resource
-def load_sentiment_model():
-    # Lahko zamenjaš model če želiš
-    return pipeline(
-        "sentiment-analysis",
-        model="distilbert-base-uncased-finetuned-sst-2-english"
-    )
+products, testimonials, reviews = load_data()
 
-# -----------------------------------
-# LOAD DATA
-# -----------------------------------
-products_df, reviews_df, testimonials_df = load_data()
+section = st.sidebar.radio("Navigation", ["Products", "Testimonials", "Reviews"])
 
-# Poskrbimo, da je stolpec 'date' v datetime formatu
-if "date" in reviews_df.columns:
-    reviews_df["date"] = pd.to_datetime(reviews_df["date"], errors="coerce")
-
-# -----------------------------------
-# SIDEBAR
-# -----------------------------------
-st.sidebar.title("Navigation")
-
-section = st.sidebar.radio(
-    "Select section:",
-    ["Products", "Testimonials", "Reviews"]
-)
-
-st.sidebar.markdown("---")
-st.sidebar.write("Brand Reputation Dashboard – 2023")
-
-# -----------------------------------
-# PRODUCTS SECTION
-# -----------------------------------
+# --- PRODUKTI ---
 if section == "Products":
-    st.title("Products")
-    st.write("Below is the list of scraped products.")
-    st.dataframe(products_df, use_container_width=True)
+    st.subheader("🛍️ Products")
+    st.dataframe(products, use_container_width=True)
 
-# -----------------------------------
-# TESTIMONIALS SECTION
-# -----------------------------------
+# --- TESTIMONIALS ---
 elif section == "Testimonials":
-    st.title("Testimonials")
-    st.write("Below is the list of scraped testimonials.")
+    st.subheader("💬 Testimonials")
+    st.dataframe(testimonials, use_container_width=True)
 
-    # Če želiš bolj 'list' format
-    for i, row in testimonials_df.iterrows():
-        st.markdown(f"- {row['text']}")
+# --- REVIEWS ---
+elif section == "Reviews":
+    st.subheader("📝 Reviews & Sentiment Analysis")
 
-# -----------------------------------
-# REVIEWS SECTION (CORE FEATURE)
-# -----------------------------------
-else:
-    st.title("Reviews – Sentiment Analysis for 2023")
-
-    # Filtriraj samo leto 2023
-    reviews_2023 = reviews_df[
-        (reviews_df["date"].dt.year == 2023)
-    ].copy()
-
-    if reviews_2023.empty:
-        st.warning("No reviews found for 2023.")
+    if reviews.empty:
+        st.error("reviews.csv is empty.")
         st.stop()
 
-    # Ustvarimo mapping mesecov
-    month_names = [
-        "January 2023", "February 2023", "March 2023", "April 2023",
-        "May 2023", "June 2023", "July 2023", "August 2023",
-        "September 2023", "October 2023", "November 2023", "December 2023"
-    ]
-    month_numbers = list(range(1, 13))
-    month_map = dict(zip(month_names, month_numbers))
+    # Procesiranje datumov
+    reviews["date"] = pd.to_datetime(reviews["date"], errors="coerce")
+    reviews = reviews.dropna(subset=["date"])
+    
+    # Filter samo za leto 2023
+    reviews_2023 = reviews[reviews["date"].dt.year == 2023].copy()
+    reviews_2023["month"] = reviews_2023["date"].dt.strftime("%B %Y")
 
-    st.subheader("1. Select month")
-    selected_month_label = st.select_slider(
-        "Choose a month in 2023:",
-        options=month_names,
-        value="January 2023"
-    )
-    selected_month = month_map[selected_month_label]
-
-    # Filtriraj po izbranem mesecu
-    filtered = reviews_2023[reviews_2023["date"].dt.month == selected_month].copy()
-
-    st.write(f"Number of reviews in {selected_month_label}: **{len(filtered)}**")
-
-    if filtered.empty:
-        st.warning("No reviews for this month.")
-        st.stop()
-
-    # -----------------------------------
-    # SENTIMENT ANALYSIS
-    # -----------------------------------
-    st.subheader("2. Sentiment analysis (Hugging Face Transformers)")
-
-    sentiment_model = load_sentiment_model()
-
-    # Za performance: analiziraš samo text stolpec
-    texts = filtered["text"].tolist()
-    results = sentiment_model(texts)
-
-    # Dodaj rezultate v dataframe
-    filtered["sentiment"] = [r["label"] for r in results]
-    filtered["confidence"] = [float(r["score"]) for r in results]
-
-    # Prikaži tabelo
-    st.write("Sample of analysed reviews:")
-    st.dataframe(
-        filtered[["date", "text", "sentiment", "confidence"]].head(20),
-        use_container_width=True
+    selected_month = st.selectbox(
+        "Select month (2023)",
+        sorted(reviews_2023["month"].unique(), key=lambda x: datetime.datetime.strptime(x, "%B %Y"))
     )
 
-    # -----------------------------------
-    # VISUALIZATION
-    # -----------------------------------
-    st.subheader("3. Sentiment distribution")
+    filtered = reviews_2023.loc[reviews_2023["month"] == selected_month].copy()
+    st.caption(f"Total reviews in {selected_month}: {len(filtered)}")
 
-    # Štejemo positive/negative
-    counts = (
-        filtered.groupby("sentiment")
-        .agg(
-            count=("sentiment", "size"),
-            avg_confidence=("confidence", "mean")
-        )
-        .reset_index()
-    )
+    @st.cache_resource
+    def load_sentiment_model():
+        return pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
 
-    # Bar chart (count)
-    chart = (
-        alt.Chart(counts)
-        .mark_bar()
-        .encode(
-            x=alt.X("sentiment:N", title="Sentiment"),
-            y=alt.Y("count:Q", title="Number of reviews"),
-            color=alt.Color("sentiment:N"),
-            tooltip=[
-                alt.Tooltip("sentiment:N", title="Sentiment"),
-                alt.Tooltip("count:Q", title="Count"),
-                alt.Tooltip("avg_confidence:Q", title="Avg confidence", format=".3f")
-            ]
-        )
-        .properties(
-            width=600,
-            height=400,
-            title=f"Sentiment distribution for {selected_month_label}"
-        )
-    )
+    classifier = load_sentiment_model()
 
-    st.altair_chart(chart, use_container_width=True)
+    with st.spinner("Running sentiment analysis..."):
+        # Izvedba analize
+        results = classifier(filtered["text"].astype(str).tolist())
+        filtered["sentiment"] = [r["label"] for r in results]
+        filtered["confidence"] = [round(r["score"], 3) for r in results]
 
-    # Povprečni confidence za info
-    avg_conf_overall = filtered["confidence"].mean()
-    st.markdown(
-        f"**Average model confidence for this month:** {avg_conf_overall:.3f}"
-    )
+    st.subheader("📋 Sample of Analysed Reviews")
+    st.dataframe(filtered[["date", "text", "sentiment", "confidence"]], use_container_width=True)
+
+    # Vizualizacija porazdelitve
+    st.subheader("📈 Sentiment Distribution")
+    sentiment_counts = filtered["sentiment"].value_counts()
+    st.bar_chart(sentiment_counts)
+    st.caption(f"Average model confidence: **{filtered['confidence'].mean():.3f}**")
+
+    # --- POLEPŠAN WORD CLOUD ---
+    st.subheader("☁️ Word Cloud of Reviews")
+    texts = filtered["text"].dropna().astype(str)
+    
+    if not texts.empty and len(" ".join(texts)) > 10:
+        all_text = " ".join(texts)
+        
+        # Ustvarjanje Word Clouda z lepšim stilom
+        wc = WordCloud(
+            width=1600, 
+            height=800, 
+            background_color="white", 
+            colormap="plasma",      # Moderna barvna paleta
+            stopwords=STOPWORDS, 
+            max_words=100,
+            collocations=False
+        ).generate(all_text)
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.imshow(wc, interpolation='bilinear')
+        ax.axis("off")
+        plt.tight_layout(pad=0)
+        st.pyplot(fig)
+    else:
+        st.warning("Not enough text to generate Word Cloud.")
